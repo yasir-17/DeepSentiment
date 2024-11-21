@@ -5,6 +5,36 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import torch.nn as nn
+import os
+from prometheus_client import start_http_server, Summary, Counter, Gauge, Histogram
+import threading
+import time
+
+BASE_DIR = os.getcwd()
+
+# Prometheus metrics 
+REQUEST_COUNT = Counter('gradio_request_total', 'Total number of requests to the app')
+REQUEST_LATENCY = Summary('gradio_request_latency_seconds', 'Request latency in seconds')
+PREDICTION_ERROR = Gauge('gradio_prediction_error', 'Current prediction error (RMSE)')
+MODEL_LOAD_TIME = Histogram('gradio_model_load_seconds', 'Time taken to load the model')
+ACTIVE_REQUESTS = Gauge('gradio_active_requests', 'Number of active requests')
+PREDICTION_VALUES = Histogram('gradio_prediction_values', 'Distribution of predicted stock prices')
+MEMORY_USAGE = Gauge('gradio_memory_usage_bytes', 'Memory usage of the application')
+
+# Simplified memory monitoring without psutil
+def update_memory_metrics():
+    while True:
+        try:
+            # Simple memory tracking using Python's built-in tools
+            import sys
+            memory = sys.getsizeof(globals()) + sys.getsizeof(locals())
+            MEMORY_USAGE.set(memory)
+        except Exception as e:
+            print(f"Error updating memory metrics: {e}")
+        time.sleep(15)
+
+# Start memory monitoring in a separate thread
+threading.Thread(target=update_memory_metrics, daemon=True).start()
 
 class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, layer_dim, output_dim, dropout_prob=0.3):
@@ -25,6 +55,85 @@ class LSTMModel(nn.Module):
         out = self.dropout(self.relu(out))
         out = self.fc2(out)
         return out
+
+@REQUEST_LATENCY.time()
+def predict_stock_price(stock_symbol, n_samples):
+    try:
+        # Track active requests
+        ACTIVE_REQUESTS.inc()
+        
+        # Increment request counter
+        REQUEST_COUNT.inc()
+        
+        # Track model loading time
+        start_time = time.time()
+        loaded_model, loaded_scaler = load_model(stock_symbol)
+        MODEL_LOAD_TIME.observe(time.time() - start_time)
+
+        # Load and prepare data
+        data_path = f'data/processed_stock_data_{stock_symbol.lower()}.csv'
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+            
+        df = pd.read_csv(data_path)
+        df = prepare_stock_data(df)
+
+        features = ['Adj Close', 'Volume', 'Price_Change', 'Volume_Change',
+                   'MA_5', 'MA_10', 'MA_20', 'MA_50', 'sentiment']
+
+        scaled_data = loaded_scaler.transform(df[features])
+        sequence_length = 24
+        X, y = create_sequences(scaled_data, sequence_length)
+
+        train_size = int(len(X) * 0.8)
+        X_val = X[train_size:]
+        y_val = y[train_size:]
+        val_dates = df.index[train_size + sequence_length:]
+
+        # Get predictions
+        predictions, actuals = get_validation_predictions(
+            loaded_model, X_val, y_val, loaded_scaler, n_samples
+        )
+
+        # Record prediction values
+        for pred in predictions:
+            PREDICTION_VALUES.observe(pred)
+
+        # Calculate and record error metrics
+        mse = np.mean((actuals - predictions) ** 2)
+        rmse = np.sqrt(mse)
+        PREDICTION_ERROR.set(rmse)
+
+        # Create visualization and summary
+        historical_data = df['Adj Close'].values
+        fig = create_prediction_plot(
+            historical_data,
+            predictions,
+            actuals,
+            list(df.index)[-len(historical_data):]
+        )
+
+        mape = np.mean(np.abs((actuals - predictions) / actuals)) * 100
+        
+        summary = pd.DataFrame({
+            'Date': val_dates[:n_samples],
+            'Actual Price': actuals,
+            'Predicted Price': predictions,
+            'Absolute Error': np.abs(actuals - predictions),
+            'Percentage Error': np.abs((actuals - predictions) / actuals) * 100
+        })
+
+        metrics_summary = f"\nError Metrics:\nRMSE: ${rmse:.2f}\nMAPE: {mape:.2f}%\n\n"
+        summary_str = metrics_summary + summary.to_string()
+
+        return fig, summary_str
+
+    except Exception as e:
+        print(f"Error in prediction: {str(e)}")
+        return None, f"An error occurred: {str(e)}"
+    finally:
+        # Decrease active requests count
+        ACTIVE_REQUESTS.dec()
 
 def prepare_stock_data(df, ma_periods=[5, 10, 20, 50]):
     """Prepare stock data with the same preprocessing as training"""
@@ -56,7 +165,11 @@ def create_sequences(data, sequence_length):
 def load_model(stock_symbol):
     """Load the saved model and scaler for a specific stock"""
     try:
-        model_state = torch.load(f'stock_model_{stock_symbol.lower()}.pth')
+        model_path = f'saved_model/stock_model_{stock_symbol.lower()}.pth'
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+            
+        model_state = torch.load(model_path)
 
         loaded_model = LSTMModel(input_dim=9, hidden_dim=128, layer_dim=2, output_dim=1)
         loaded_model.load_state_dict(model_state['model_state_dict'])
@@ -78,7 +191,6 @@ def get_validation_predictions(model, X_val, y_val, scaler, n_samples):
             predictions.append(pred.item())
             actuals.append(y_val[i])
 
-    # Inverse transform predictions and actuals
     pred_array = np.array(predictions).reshape(-1, 1)
     actual_array = np.array(actuals).reshape(-1, 1)
 
@@ -98,7 +210,6 @@ def create_prediction_plot(historical_values, predicted_values, actual_values, d
     """Create an interactive plot using plotly"""
     fig = go.Figure()
 
-    # Add historical data
     fig.add_trace(go.Scatter(
         x=dates[:-len(predicted_values)],
         y=historical_values[:-len(predicted_values)],
@@ -106,7 +217,6 @@ def create_prediction_plot(historical_values, predicted_values, actual_values, d
         line=dict(color='blue')
     ))
 
-    # Add actual values
     fig.add_trace(go.Scatter(
         x=dates[-len(actual_values):],
         y=actual_values,
@@ -114,7 +224,6 @@ def create_prediction_plot(historical_values, predicted_values, actual_values, d
         line=dict(color='green')
     ))
 
-    # Add predictions
     fig.add_trace(go.Scatter(
         x=dates[-len(predicted_values):],
         y=predicted_values,
@@ -131,66 +240,10 @@ def create_prediction_plot(historical_values, predicted_values, actual_values, d
 
     return fig
 
-def predict_stock_price(stock_symbol, n_samples):
-    try:
-        # Load the stock data
-        df = pd.read_csv(f"processed_stock_data_{stock_symbol.lower()}.csv")
-        df = prepare_stock_data(df)
-
-        # Load model and scaler
-        loaded_model, loaded_scaler = load_model(stock_symbol)
-
-        # Prepare validation data
-        features = ['Adj Close', 'Volume', 'Price_Change', 'Volume_Change',
-                   'MA_5', 'MA_10', 'MA_20', 'MA_50', 'sentiment']
-
-        scaled_data = loaded_scaler.transform(df[features])
-        sequence_length = 24
-        X, y = create_sequences(scaled_data, sequence_length)
-
-        # Use last 20% as validation set
-        train_size = int(len(X) * 0.8)
-        X_val = X[train_size:]
-        y_val = y[train_size:]
-        val_dates = df.index[train_size + sequence_length:]
-
-        # Get predictions for n_samples from validation set
-        predictions, actuals = get_validation_predictions(
-            loaded_model, X_val, y_val, loaded_scaler, n_samples
-        )
-
-        # Create the plot
-        historical_data = df['Adj Close'].values
-        fig = create_prediction_plot(
-            historical_data,
-            predictions,
-            actuals,
-            list(df.index)[-len(historical_data):]
-        )
-
-        # Calculate error metrics
-        mse = np.mean((actuals - predictions) ** 2)
-        rmse = np.sqrt(mse)
-        mape = np.mean(np.abs((actuals - predictions) / actuals)) * 100
-
-        # Create summary
-        summary = pd.DataFrame({
-            'Date': val_dates[:n_samples],
-            'Actual Price': actuals,
-            'Predicted Price': predictions,
-            'Absolute Error': np.abs(actuals - predictions),
-            'Percentage Error': np.abs((actuals - predictions) / actuals) * 100
-        })
-
-        metrics_summary = f"\nError Metrics:\nRMSE: ${rmse:.2f}\nMAPE: {mape:.2f}%\n\n"
-        summary_str = metrics_summary + summary.to_string()
-
-        return fig, summary_str
-
-    except Exception as e:
-        return None, f"An error occurred: {str(e)}"
-
 def main():
+    # Start the Prometheus metrics server
+    start_http_server(8000)
+    
     # Create Gradio interface
     iface = gr.Interface(
         fn=predict_stock_price,
@@ -216,7 +269,7 @@ def main():
     )
     
     # Launch the app
-    iface.launch()
+    iface.launch(server_port=7860, server_name="0.0.0.0", share=True)
 
 if __name__ == "__main__":
     main()

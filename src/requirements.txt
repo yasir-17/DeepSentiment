@@ -1,0 +1,12 @@
+pandas
+numpy
+matplotlib
+seaborn
+torch
+torchinfo
+scikit-learn
+transformers
+tqdm
+gradio
+plotly
+prometheus_client
