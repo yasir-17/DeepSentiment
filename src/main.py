@@ -9,6 +9,7 @@ import os
 from prometheus_client import start_http_server, Summary, Counter, Gauge, Histogram
 import threading
 import time
+import json
 
 BASE_DIR = os.getcwd()
 
@@ -20,6 +21,9 @@ MODEL_LOAD_TIME = Histogram('gradio_model_load_seconds', 'Time taken to load the
 ACTIVE_REQUESTS = Gauge('gradio_active_requests', 'Number of active requests')
 PREDICTION_VALUES = Histogram('gradio_prediction_values', 'Distribution of predicted stock prices')
 MEMORY_USAGE = Gauge('gradio_memory_usage_bytes', 'Memory usage of the application')
+FEEDBACK_RATINGS = Counter('gradio_feedback_ratings_total', 'Total number of feedback ratings', ['rating'])
+FEEDBACK_SUBMISSIONS = Counter('gradio_feedback_submissions_total', 'Total number of feedback submissions')
+
 
 # Simplified memory monitoring without psutil
 def update_memory_metrics():
@@ -240,12 +244,43 @@ def create_prediction_plot(historical_values, predicted_values, actual_values, d
 
     return fig
 
+def save_feedback(rating, comment):
+    """Save feedback to a JSON file and update Prometheus metrics"""
+    try:
+        feedback_data = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'rating': rating,
+            'comment': comment
+        }
+        
+        # Update Prometheus metrics
+        FEEDBACK_SUBMISSIONS.inc()
+        FEEDBACK_RATINGS.labels(rating=str(rating)).inc()
+        
+        # Save to JSON file
+        feedback_file = os.path.join(BASE_DIR, 'feedback.json')
+        
+        if os.path.exists(feedback_file):
+            with open(feedback_file, 'r') as f:
+                existing_feedback = json.load(f)
+        else:
+            existing_feedback = []
+            
+        existing_feedback.append(feedback_data)
+        
+        with open(feedback_file, 'w') as f:
+            json.dump(existing_feedback, f, indent=4)
+            
+        return "Thank you for your feedback! Your response has been recorded."
+    except Exception as e:
+        return f"Error saving feedback: {str(e)}"
+
 def main():
     # Start the Prometheus metrics server
     start_http_server(8000)
     
-    # Create Gradio interface
-    iface = gr.Interface(
+    # Create the prediction interface
+    prediction_interface = gr.Interface(
         fn=predict_stock_price,
         inputs=[
             gr.Dropdown(
@@ -263,13 +298,39 @@ def main():
         outputs=[
             gr.Plot(label="Stock Price Prediction Plot"),
             gr.Textbox(label="Prediction Summary and Metrics", lines=15)
+        ]
+    )
+    
+    # Create the feedback interface
+    feedback_interface = gr.Interface(
+        fn=save_feedback,
+        inputs=[
+            gr.Slider(
+                minimum=1,
+                maximum=5,
+                step=1,
+                value=3,
+                label="Rate your experience (1-5 stars)"
+            ),
+            gr.Textbox(
+                lines=3,
+                label="Please share any comments, suggestions, or issues you encountered"
+            )
         ],
-        title="Stock Price Prediction with LSTM (Validation Testing)",
-        description="Compare predicted prices with actual values from validation set.",
+        outputs=gr.Textbox(label="Feedback Status"),
+        title="Provide Feedback"
+    )
+    
+    # Combine interfaces into tabs
+    demo = gr.TabbedInterface(
+        [prediction_interface, feedback_interface],
+        ["Stock Prediction", "Feedback"],
+        title="Stock Price Prediction with LSTM",
+        #description="Compare predicted prices with actual values and provide feedback on your experience."
     )
     
     # Launch the app
-    iface.launch(server_port=7860, server_name="0.0.0.0", share=True)
+    demo.launch(server_port=7860, server_name="0.0.0.0", share=True)
 
 if __name__ == "__main__":
     main()
