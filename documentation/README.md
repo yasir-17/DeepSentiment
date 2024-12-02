@@ -15,10 +15,10 @@ monitoring = Constains the prometehus file.
 **Dockerized Deployment**: The app and monitoring stack are deployed using Docker and Docker Compose for easy setup and deployment.
 
 # Prerequisites
-Docker
-Docker Compose
-Python 3.7+
-Jupyter Notebook (for training the model)
+- Docker
+- Docker Compose
+- Python 3.7+
+- Jupyter Notebook (for training the model)
 
 # Setup and Installation
 1) Clone the repository
@@ -29,6 +29,13 @@ Jupyter Notebook (for training the model)
 6) Prometheus will be accessible at http://localhost:9090
 7) Grafana will be available at http://localhost:3000
 8) Stop the container using docker-compose down command
+
+# Repository Contents
+- /src contains the main.py (gradio app) as well as the utils folder which has model training code and data exploration code
+- deployment - Contains the Dockerfile for containerization and also the docker-compose.yml file
+- monitoring - Contains the code for prometheus monitoring
+- documentation - Contains the document which includes project proposal and final report
+- videos - Contains demo video of the system
 
 # Monitoring with Prometheus and Grafana
 The app tracks various metrics using Prometheus (running on port 9090) and visualizes them in Grafana (running on port 3000). The metrics include:
