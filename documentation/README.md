@@ -8,11 +8,11 @@ deployment = Contain the Dockerfile
 monitoring = Constains the prometehus file.
 
 # Features
-**Stock Prediction**: Predict future stock prices using an LSTM model trained on historical stock data and social media sentiment
-**Model Training**: A Jupyter Notebook (`LSTM.ipynb`) that walks through the steps of training the LSTM model.
-**Real-time Monitoring**: Metrics for monitoring the Gradio app's performance and stock prediction errors are tracked using Prometheus.
-**Visualization**: Metrics are visualized in real-time using Prometheus and Grafana.
-**Dockerized Deployment**: The app and monitoring stack are deployed using Docker and Docker Compose for easy setup and deployment.
+- **Stock Prediction**: Predict future stock prices using an LSTM model trained on historical stock data and social media sentiment
+- **Model Training**: A Jupyter Notebook (`LSTM.ipynb`) that walks through the steps of training the LSTM model.
+- **Real-time Monitoring**: Metrics for monitoring the Gradio app's performance and stock prediction errors are tracked using Prometheus.
+- **Visualization**: Metrics are visualized in real-time using Prometheus and Grafana.
+- **Dockerized Deployment**: The app and monitoring stack are deployed using Docker and Docker Compose for easy setup and deployment.
 
 # Prerequisites
 - Docker
